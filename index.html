@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Immersive 3D Window - Off-axis Projection</title>
+    <style>
+        :root {
+            --bg-color: #1a1a1a;
+            --panel-bg: rgba(0, 0, 0, 0.85);
+            --accent-color: #00ffcc;
+            --text-color: #eeeeee;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: var(--bg-color);
+            font-family: 'Inter', -apple-system, sans-serif;
+            color: var(--text-color);
+        }
+        #container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+        }
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 300px;
+            padding: 24px;
+            background: var(--panel-bg);
+            border-radius: 16px;
+            backdrop-filter: blur(20px);
+            z-index: 100;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        }
+        h1 {
+            font-size: 1.1rem;
+            margin: 0 0 20px 0;
+            color: var(--accent-color);
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-size: 0.75rem;
+            margin-bottom: 8px;
+            color: #aaa;
+            font-weight: 600;
+        }
+        input[type="number"], input[type="range"] {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+            padding: 10px;
+            border-radius: 8px;
+            box-sizing: border-box;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        input:focus {
+            border-color: var(--accent-color);
+        }
+        input[type="range"] {
+            padding: 0;
+            height: 6px;
+            -webkit-appearance: none;
+            background: #333;
+            cursor: pointer;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            background: var(--accent-color);
+            border-radius: 50%;
+        }
+        .debug-video-container {
+            position: absolute;
+            bottom: 24px;
+            right: 24px;
+            width: 200px;
+            height: 150px;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            z-index: 50;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        }
+        #debug-video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+        #status {
+            font-size: 0.7rem;
+            margin-top: 15px;
+            color: #666;
+            text-align: center;
+        }
+        #start-btn {
+            width: 100%;
+            padding: 12px;
+            background: var(--accent-color);
+            border: none;
+            border-radius: 8px;
+            color: #000;
+            font-weight: 700;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 12px rgba(0, 255, 204, 0.3);
+        }
+        #start-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(0, 255, 204, 0.4);
+        }
+        .value-display {
+            float: right;
+            color: var(--accent-color);
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui-panel">
+    <h1>3D View Settings</h1>
+    <div class="input-group">
+        <label>画面物理幅 (cm) <span class="value-display" id="w-val">34.5</span></label>
+        <input type="number" id="screen-width" value="34.5" step="0.1">
+    </div>
+    <div class="input-group">
+        <label>画面物理高 (cm) <span class="value-display" id="h-val">19.4</span></label>
+        <input type="number" id="screen-height" value="19.4" step="0.1">
+    </div>
+    <div class="input-group">
+        <label>カメラ位置 (上端からcm) <span class="value-display" id="o-val">1.0</span></label>
+        <input type="number" id="camera-offset" value="1.0" step="0.1">
+    </div>
+    <div class="input-group">
+        <label>部屋の奥行き (cm) <span class="value-display" id="depth-value">50</span></label>
+        <input type="range" id="room-depth" min="20" max="300" value="100">
+    </div>
+    <button id="start-btn">Start Tracking</button>
+    <div id="status">Loading libraries...</div>
+</div>
+
+<div class="debug-video-container">
+    <video id="debug-video" playsinline autoplay muted></video>
+</div>
+
+<div id="container"></div>
+
+<script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.162.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.162.0/examples/jsm/"
+      }
+    }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+
+    // --- Configurations ---
+    const config = {
+        screenWidth: 34.5,
+        screenHeight: 19.4,
+        cameraOffset: 1.0,
+        roomDepth: 100,
+        updateFromUI: function() {
+            this.screenWidth = parseFloat(document.getElementById('screen-width').value);
+            this.screenHeight = parseFloat(document.getElementById('screen-height').value);
+            this.cameraOffset = parseFloat(document.getElementById('camera-offset').value);
+            this.roomDepth = parseFloat(document.getElementById('room-depth').value);
+            
+            document.getElementById('w-val').textContent = this.screenWidth;
+            document.getElementById('h-val').textContent = this.screenHeight;
+            document.getElementById('o-val').textContent = this.cameraOffset;
+            document.getElementById('depth-value').textContent = this.roomDepth;
+        }
+    };
+
+    // --- Global Variables ---
+    let scene, camera, renderer;
+    let roomGroup;
+    let faceLandmarker;
+    let video = document.getElementById('debug-video');
+    let lastVideoTime = -1;
+    let isTracking = false;
+
+    // --- Initialization ---
+    async function init() {
+        setupThreeJS();
+        setupUI();
+        await setupMediaPipe();
+        
+        document.getElementById('start-btn').addEventListener('click', startCamera);
+        window.addEventListener('resize', onWindowResize);
+        
+        animate();
+    }
+
+    function setupThreeJS() {
+        const container = document.getElementById('container');
+        scene = new THREE.Scene();
+
+        // Standard perspective camera, focal/projection will be overwritten
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1000);
+        
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        container.appendChild(renderer.domElement);
+
+        updateRoom();
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+        
+        const spotLight = new THREE.SpotLight(0xffffff, 100);
+        spotLight.position.set(0, 20, 20);
+        spotLight.angle = Math.PI / 4;
+        spotLight.penumbra = 0.5;
+        scene.add(spotLight);
+    }
+
+    function updateRoom() {
+        if (roomGroup) scene.remove(roomGroup);
+        roomGroup = new THREE.Group();
+
+        const w = config.screenWidth;
+        const h = config.screenHeight;
+        const d = config.roomDepth;
+
+        // Box geometry centered, but we want the screen at Z=0
+        // Walls, Floor, Ceiling, Back Wall
+        const material = new THREE.MeshStandardMaterial({ 
+            color: 0xcccccc, 
+            side: THREE.BackSide 
+        });
+        
+        const roomGeo = new THREE.BoxGeometry(w, h, d);
+        const roomMesh = new THREE.Mesh(roomGeo, material);
+        roomMesh.position.z = -d / 2; // Near face at Z=0, Far face at Z=-d
+        roomGroup.add(roomMesh);
+
+        // Grid/Lines for better perspective sense
+        const edges = new THREE.EdgesGeometry(roomGeo);
+        const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x444444 }));
+        line.position.z = -d / 2;
+        roomGroup.add(line);
+
+        // Add some "furniture" or reference objects
+        const cubeGeo = new THREE.BoxGeometry(5, 5, 5);
+        const cubeMat = new THREE.MeshStandardMaterial({ color: 0x00ffcc });
+        const cube = new THREE.Mesh(cubeGeo, cubeMat);
+        cube.position.set(5, -h/2 + 2.5, -d + 10);
+        roomGroup.add(cube);
+
+        const cube2 = new THREE.Mesh(cubeGeo, cubeMat);
+        cube2.position.set(-8, h/2 - 2.5, -d/2);
+        roomGroup.add(cube2);
+
+        scene.add(roomGroup);
+    }
+
+    function setupUI() {
+        const ids = ['screen-width', 'screen-height', 'camera-offset', 'room-depth'];
+        ids.forEach(id => {
+            document.getElementById(id).addEventListener('input', () => {
+                config.updateFromUI();
+                updateRoom();
+            });
+        });
+        config.updateFromUI();
+    }
+
+    async function setupMediaPipe() {
+        const filesetResolver = await FilesetResolver.forVisionTasks(
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+        );
+        faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+            baseOptions: {
+                modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+                delegate: "GPU"
+            },
+            runningMode: "VIDEO",
+            numFaces: 1
+        });
+        document.getElementById('status').textContent = "Ready";
+    }
+
+    async function startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { width: 1280, height: 720 } 
+            });
+            video.srcObject = stream;
+            video.addEventListener('loadeddata', () => {
+                isTracking = true;
+                document.getElementById('status').textContent = "Tracking active";
+                document.getElementById('start-btn').style.display = 'none';
+            });
+        } catch (err) {
+            console.error(err);
+            document.getElementById('status').textContent = "Camera error: " + err.message;
+        }
+    }
+
+    function onWindowResize() {
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    /**
+     * Off-axis Projection Calculation
+     * @param {number} x - Eye X position (cm) relative to screen center
+     * @param {number} y - Eye Y position (cm) relative to screen center
+     * @param {number} z - Eye Z distance (cm) from screen
+     */
+    function updateProjection(x, y, z) {
+        const w = config.screenWidth;
+        const h = config.screenHeight;
+
+        // Plane boundaries relative to screen center
+        const L = -w / 2;
+        const R = w / 2;
+        const B = -h / 2;
+        const T = h / 2;
+
+        // Frustum coordinates relative to eye
+        const near = z; 
+        const far = 1000;
+        
+        const left   = L - x;
+        const right  = R - x;
+        const bottom = B - y;
+        const top    = T - y;
+
+        // Apply non-asymmetric frustum skew
+        // Three.js makePerspective uses near/far to scale the left/right/top/bottom
+        // actually makePerspective(left, right, top, bottom, near, far) expects the 
+        // values AT the near plane.
+        camera.projectionMatrix.makePerspective(left, right, top, bottom, near, far);
+        
+        // Move camera to eye position
+        camera.position.set(x, y, z);
+        camera.lookAt(x, y, 0); // Always perpendicular to the screen plane
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        if (isTracking && video.currentTime !== lastVideoTime) {
+            lastVideoTime = video.currentTime;
+            const results = faceLandmarker.detectForVideo(video, performance.now());
+            
+            if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+                const landmarks = results.faceLandmarks[0];
+                
+                // Nose Tip (1) or Eyes (33, 263)
+                const leftEye = landmarks[33];
+                const rightEye = landmarks[263];
+                
+                // Mean X, Y (Mirroring corrected: 1-x because video is mirrored)
+                const normX = 1.0 - (leftEye.x + rightEye.x) / 2;
+                const normY = (leftEye.y + rightEye.y) / 2;
+
+                // Physical X, Y (Center of screen is 0,0)
+                const physX = (normX - 0.5) * config.screenWidth;
+                // Camera is at top edge - config.cameraOffset
+                // Screen Y goes -H/2 to H/2. Camera Y is H/2 - offset.
+                const camY = config.screenHeight / 2 - config.cameraOffset;
+                const physY = (0.5 - normY) * config.screenHeight + camY;
+
+                // Z estimation: Use eye distance in landmarks
+                // In average human, eye inner-distance is ~6.3cm (2.5 inches)
+                const dX = leftEye.x - rightEye.x;
+                const dY = leftEye.y - rightEye.y;
+                const eyeDistNormalized = Math.sqrt(dX*dX + dY*dY);
+                
+                // Simple inversely proportional model: Z = K / distance_in_normalized_coords
+                // K is a calibration constant. If screen width is 35cm, and eye distance is ~6.3cm,
+                // at 60cm distance, eyeDistNormalized should be ~ 6.3/35 ≈ 0.18.
+                // K = 60 * 0.18 ≈ 11
+                const K = 11.5; 
+                const physZ = K / eyeDistNormalized;
+
+                updateProjection(physX, physY, physZ);
+            }
+        }
+
+        renderer.render(scene, camera);
+    }
+
+    init();
+</script>
+</body>
+</html>
